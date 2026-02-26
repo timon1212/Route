@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offline Professional Delivery Manager</title>
+<style>
+body{margin:0;font-family:Helvetica,Arial,sans-serif;background:#f5f5f7;color:#222;}
+header{background:#4a90e2;color:white;padding:20px;text-align:center;font-size:26px;font-weight:bold;box-shadow:0 2px 4px rgba(0,0,0,0.1);}
+.container{max-width:900px;margin:0 auto;padding:10px;}
+.card{background:white;padding:15px;margin:10px 0;border-radius:12px;box-shadow:0 4px 8px rgba(0,0,0,0.08);}
+button{padding:10px 14px;margin:4px;border:none;border-radius:6px;background:#4a90e2;color:white;cursor:pointer;font-size:14px;}
+button:hover{background:#357ABD;}
+input, select, textarea{width:100%;padding:8px;margin:4px 0;border-radius:6px;border:1px solid #ccc;box-sizing:border-box;font-size:14px;}
+#mapCanvas{border:1px solid #ccc;border-radius:12px;width:100%;height:400px;margin:10px 0;touch-action:none;}
+.table-container{overflow-x:auto;}
+table{border-collapse:collapse;width:100%;margin-top:10px;}
+th, td{border:1px solid #ccc;padding:8px;text-align:left;font-size:14px;}
+th{background:#eee;}
+.status-complete{color:green;font-weight:bold;}
+.status-pending{color:#e67e22;font-weight:bold;}
+.checklist-complete{color:green;font-weight:bold;}
+.checklist-pending{color:#e67e22;font-weight:bold;}
+.theme-toggle{position:fixed;top:10px;right:10px;padding:10px;background:#222;color:white;border-radius:6px;z-index:999;}
+</style>
+</head>
+<body>
+<header>🚚 Offline Delivery Manager with History</header>
+<div class="container">
+
+<button class="theme-toggle" onclick="toggleTheme()">Toggle Dark Mode</button>
+
+<div class="card">
+<h3>Routes</h3>
+<select id="routeSelector" onchange="switchRoute()"></select>
+<input type="text" id="newRouteName" placeholder="New route name">
+<button onclick="createRoute()">Add Route</button>
+<button onclick="deleteRoute()">Delete Route</button>
+<button onclick="showHistory()">Show Completed Routes</button>
+</div>
+
+<div class="card" id="addStopCard">
+<h3>Add New Stop</h3>
+<label>Stop Name</label><input type="text" id="stopName">
+<label>Address / Notes</label><textarea id="stopAddress"></textarea>
+<label>Category</label><input type="text" id="stopCategory" placeholder="Delivery, Fuel, Service">
+<label>Priority</label>
+<select id="stopPriority">
+<option value="Low">Low</option>
+<option value="Medium">Medium</option>
+<option value="High">High</option>
+</select>
+<button onclick="addStop()">Add Stop</button>
+</div>
+
+<canvas id="mapCanvas"></canvas>
+
+<div class="card">
+<h3>Route Controls</h3>
+<button onclick="calculateRoute()">Optimize Route</button>
+<button onclick="startRoute()">Start Timer</button>
+<button onclick="pauseRoute()">Pause Timer</button>
+<button onclick="resetRoute()">Reset Timer</button>
+<button onclick="startPlayback()">Start Playback</button>
+<button onclick="completeRoute()">Mark Route Complete</button>
+<p>Total Estimated Time: <span id="totalTime">0</span> mins</p>
+<p>Route Status: <span id="routeStatus">Not started</span></p>
+</div>
+
+<div class="card table-container">
+<h3>Stops</h3>
+<table id="stopsTable">
+<tr><th>Name</th><th>Address</th><th>Category</th><th>Priority</th><th>Status</th><th>Checklist</th><th>Photo</th><th>Actions</th></tr>
+</table>
+</div>
+
+<div class="card table-container" id="historyCard" style="display:none;">
+<h3>Completed Routes</h3>
+<table id="historyTable">
+<tr><th>Route Name</th><th>Date Completed</th><th>Stops</th><th>Actions</th></tr>
+</table>
+</div>
+
+<div class="card">
+<button onclick="exportCSV()">Export Current Route CSV</button>
+<button onclick="exportHistory()">Export History CSV</button>
+</div>
+
+</div>
+
+<script>
+// === Data ===
+var routes = JSON.parse(localStorage.getItem('routes') || '{}');
+var currentRoute = null;
+var history = JSON.parse(localStorage.getItem('history') || '[]');
+var routeOrder = [];
+var routeTimer=null, routeElapsed=0;
+var playbackTimer=null, playbackIndex=0, playbackX=0, playbackY=0;
+var darkMode=false;
+
+// Map setup
+var canvas=document.getElementById('mapCanvas'); var ctx=canvas.getContext('2d');
+var mapImg=new Image(); mapImg.src='us-map.png';
+var offsetX=0, offsetY=0, scale=1, isDragging=false, startX=0, startY=0;
+mapImg.onload=function(){drawMap();}
+
+// Touch drag & zoom
+canvas.addEventListener('touchstart', function(e){isDragging=true;startX=e.touches[0].clientX;startY=e.touches[0].clientY;});
+canvas.addEventListener('touchmove', function(e){if(isDragging){var dx=e.touches[0].clientX-startX; var dy=e.touches[0].clientY-startY; offsetX+=dx; offsetY+=dy; startX=e.touches[0].clientX; startY=e.touches[0].clientY; drawMap();} e.preventDefault();});
+canvas.addEventListener('touchend', function(e){isDragging=false;});
+canvas.addEventListener('wheel', function(e){var delta=e.deltaY<0?1.1:0.9; scale*=delta; drawMap(); e.preventDefault();});
+
+// === Routes ===
+function saveRoutes(){localStorage.setItem('routes',JSON.stringify(routes)); populateRouteSelector();}
+function saveHistory(){localStorage.setItem('history',JSON.stringify(history));}
+function populateRouteSelector(){
+ var sel=document.getElementById('routeSelector'); sel.innerHTML='';
+ for(var r in routes){var opt=document.createElement('option'); opt.value=r; opt.text=r; sel.appendChild(opt);}
+ if(currentRoute && routes[currentRoute]) sel.value=currentRoute;
+ else if(Object.keys(routes).length>0){currentRoute=Object.keys(routes)[0]; sel.value=currentRoute;}
+ else currentRoute=null;
+ renderStops();
+}
+function createRoute(){
+ var name=document.getElementById('newRouteName').value; if(!name){alert('Enter name'); return;}
+ if(routes[name]){alert('Route exists'); return;}
+ routes[name]={stops:[],timer:0}; currentRoute=name; saveRoutes(); document.getElementById('newRouteName').value='';
+}
+function deleteRoute(){if(!currentRoute) return; if(confirm('Delete route '+currentRoute+'?')){delete routes[currentRoute];currentRoute=Object.keys(routes)[0]||null; saveRoutes();}}
+function switchRoute(){currentRoute=document.getElementById('routeSelector').value; renderStops();}
+
+// === Stops ===
+function stopsList(){return currentRoute?routes[currentRoute].stops:[];}
+function saveCurrentStops(){if(currentRoute){routes[currentRoute].stops=stopsList(); saveRoutes();}}
+function addStop(){
+ if(!currentRoute){alert('Select route'); return;}
+ var name=document.getElementById('stopName').value;
+ var address=document.getElementById('stopAddress').value;
+ var category=document.getElementById('stopCategory').value;
+ var priority=document.getElementById('stopPriority').value;
+ if(!name){alert('Stop name required'); return;}
+ stopsList().push({name:name,address:address,category:category,priority:priority,status:'Pending',lat:Math.random()*25+25,lng:Math.random()*-125+70,checklist:{delivered:false,signature:false},photo:null});
+ saveCurrentStops();
+ document.getElementById('stopName').value=''; document.getElementById('stopAddress').value=''; document.getElementById('stopCategory').value='';
+}
+function renderStops(){
+ var table=document.getElementById('stopsTable'); table.innerHTML='<tr><th>Name</th><th>Address</th><th>Category</th><th>Priority</th><th>Status</th><th>Checklist</th><th>Photo</th><th>Actions</th></tr>';
+ var stops=stopsList();
+ for(var i=0;i<stops.length;i++){
+  var s=stops[i]; var tr=document.createElement('tr');
+  tr.innerHTML='<td>'+s.name+'</td><td>'+s.address+'</td><td>'+s.category+'</td><td>'+s.priority+'</td><td class="'+(s.status==='Complete'?'status-complete':'status-pending')+'">'+s.status+'</td>'+
+  '<td class="'+(checklistComplete(s)?'checklist-complete':'checklist-pending')+'">'+(checklistComplete(s)?'Complete':'Pending')+'</td>'+
+  '<td>'+(s.photo?'<span>✓</span>':'<input type="file" onchange="uploadPhoto(event,'+i+')">')+'</td>'+
+  '<td><button onclick="editStop('+i+')">Edit</button> <button onclick="deleteStop('+i+')">Delete</button> <button onclick="toggleChecklist('+i+')">Checklist</button></td>';
+  table.appendChild(tr);
+ }
+ drawMap();
+}
+function editStop(i){
+ var s=stopsList()[i]; var name=prompt('Edit Name',s.name); if(name!==null)s.name=name;
+ var address=prompt('Edit Address/Notes',s.address); if(address!==null)s.address=address;
+ var category=prompt('Edit Category',s.category); if(category!==null)s.category=category;
+ var priority=prompt('Edit Priority',s.priority); if(priority!==null)s.priority=priority;
+ saveCurrentStops();
+}
+function deleteStop(i){if(confirm('Delete this stop?')){stopsList().splice(i,1); saveCurrentStops();}}
+function toggleChecklist(i){var s=stopsList()[i]; s.checklist.delivered=confirm('Mark Delivered?'); s.checklist.signature=confirm('Signature Obtained?'); if(checklistComplete(s) && s.photo) s.status='Complete'; saveCurrentStops();}
+function checklistComplete(s){return s.checklist.delivered && s.checklist.signature;}
+function uploadPhoto(e,i){var file=e.target.files[0]; var reader=new FileReader(); reader.onload=function(evt){stopsList()[i].photo=evt.target.result; if(checklistComplete(stopsList()[i])) stopsList()[i].status='Complete'; saveCurrentStops();}; reader.readAsDataURL(file);}
+
+// === Route Optimization ===
+function calculateRoute(){
+ var stops=stopsList(); if(stops.length===0){alert('Add stops first'); return;}
+ var remaining=stops.slice(); var route=[];
+ var current=remaining.shift(); route.push(current);
+ while(remaining.length>0){
+  var nearestIndex=0; var nearestDist=distance(current,remaining[0]);
+  for(var i=1;i<remaining.length;i++){var d=distance(current,remaining[i]); if(d<nearestDist){nearestDist=d;nearestIndex=i;}}
+  current=remaining.splice(nearestIndex,1)[0]; route.push(current);
+ }
+ routeOrder=route; updateStopOrder(); alert('Route optimized!');
+}
+function distance(a,b){var dx=a.lat-b.lat; var dy=a.lng-b.lng; return Math.sqrt(dx*dx+dy*dy);}
+function updateStopOrder(){var stops=stopsList(); for(var i=0;i<stops.length;i++) if(checklistComplete(stops[i]) && stops[i].photo) stops[i].status='Complete'; else stops[i].status='Pending'; renderStops(); var total=stops.length*5+(stops.length-1)*30; document.getElementById('totalTime').innerText=total;}
+
+// === Timer ===
+function startRoute(){if(routeTimer)return; routeTimer=setInterval(function(){routeElapsed++;document.getElementById('routeStatus').innerText='Running'},60000);}
+function pauseRoute(){if(routeTimer){clearInterval(routeTimer);routeTimer=null;document.getElementById('routeStatus').innerText='Paused';}}
+function resetRoute(){routeElapsed=0;pauseRoute();document.getElementById('routeStatus').innerText='Not started';}
+
+// === Complete Route ===
+function completeRoute(){
+ if(!currentRoute) return; var stops=stopsList();
+ if(stops.length===0){alert('No stops to complete'); return;}
+ history.push({routeName:currentRoute,date:new Date().toLocaleString(),stops:JSON.parse(JSON.stringify(stops))});
+ saveHistory(); alert('Route saved to history!'); resetRoute();
+}
+
+// === History ===
+function showHistory(){
+ document.getElementById('historyCard').style.display='block';
+ var table=document.getElementById('historyTable'); table.innerHTML='<tr><th>Route Name</th><th>Date Completed</th><th>Stops</th><th>Actions</th></tr>';
+ for(var i=0;i<history.length;i++){
+  var h=history[i]; var tr=document.createElement('tr');
+  tr.innerHTML='<td>'+h.routeName+'</td><td>'+h.date+'</td><td>'+h.stops.length+'</td><td><button onclick="viewHistory('+i+')">View</button></td>';
+  table.appendChild(tr);
+ }
+}
+function viewHistory(i){
+ var h=history[i]; alert('Route: '+h.routeName+'\nCompleted: '+h.date+'\nStops: '+h.stops.map(s=>s.name).join(', '));
+}
+
+// === CSV Export ===
+function exportCSV(){var stops=stopsList(); if(!stops.length){alert('No stops'); return;}
+ var csv='Name,Address,Category,Priority,Status,Delivered,Signature,Photo\n';
+ for(var i=0;i<stops.length;i++){var s=stops[i]; csv+='"'+s.name+'","'+s.address+'","'+s.category+'","'+s.priority+'","'+s.status+'","'+s.checklist.delivered+'","'+s.checklist.signature+'","'+(s.photo?1:0)+'"\n';}
+ var blob=new Blob([csv],{type:'text/csv'}); var link=document.createElement('a'); link.href=window.URL.createObjectURL(blob); link.download=currentRoute+'_route.csv'; link.click();
+}
+function exportHistory(){if(!history.length){alert('No history'); return;}
+ var csv='Route,Date,StopCount\n'; for(var i=0;i<history.length;i++){csv+='"'+history[i].routeName+'","'+history[i].date+'","'+history[i].stops.length+'"\n';}
+ var blob=new Blob([csv],{type:'text/csv'}); var link=document.createElement('a'); link.href=window.URL.createObjectURL(blob); link.download='route_history.csv'; link.click();
+}
+
+// === Map Drawing & Playback ===
+var playbackIndex=0, playbackX=0, playbackY=0;
+function drawMap(){
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ ctx.save(); ctx.translate(offsetX,offsetY); ctx.scale(scale,scale);
+ ctx.drawImage(mapImg,0,0,canvas.width,canvas.height);
+ if(routeOrder.length>1){ctx.beginPath(); ctx.strokeStyle='blue'; ctx.lineWidth=2;
+  for(var i=0;i<routeOrder.length;i++){var s=routeOrder[i]; var x=(s.lng+125)*(canvas.width/60); var y=(50-s.lat)*(canvas.height/50); if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);} ctx.stroke();}
+ var stops=stopsList(); for(var i=0;i<stops.length;i++){var s=stops[i]; var x=(s.lng+125)*(canvas.width/60); var y=(50-s.lat)*(canvas.height/50); ctx.beginPath(); ctx.arc(x,y,6,0,2*Math.PI); ctx.fillStyle=(s.status==='Complete'?'green':'red'); ctx.fill(); ctx.fillText(s.name,x+8,y+4);}
+ if(playbackIndex<routeOrder.length){ctx.beginPath(); ctx.arc(playbackX,playbackY,8,0,2*Math.PI); ctx.fillStyle='orange'; ctx.fill();}
+ ctx.restore();
+}
+function startPlayback(){if(routeOrder.length<2){alert('Optimize route first'); return;}
+ if(playbackTimer) clearInterval(playbackTimer); playbackIndex=0;
+ var s0=routeOrder[0]; playbackX=(s0.lng+125)*(canvas.width/60); playbackY=(50-s0.lat)*(canvas.height/50);
+ playbackTimer=setInterval(function(){
+   if(playbackIndex>=routeOrder.length-1){clearInterval(playbackTimer); return;}
+   var s1=routeOrder[playbackIndex]; var s2=routeOrder[playbackIndex+1];
+   var x1=(s1.lng+125)*(canvas.width/60); var y1=(50-s1.lat)*(canvas.height/50);
+   var x2=(s2.lng+125)*(canvas.width/60); var y2=(50-s2.lat)*(canvas.height/50);
+   playbackX+=(x2-x1)/20; playbackY+=(y2-y1)/20;
+   if(Math.abs(playbackX-x2)<1 && Math.abs(playbackY-y2)<1){playbackIndex++; if(checklistComplete(s2) && s2.photo) s2.status='Complete'; renderStops();}
+   drawMap();
+ },200);}
+function toggleTheme(){darkMode=!darkMode;document.body.style.background=darkMode?'#222':'#f5f5f7';document.body.style.color=darkMode?'#fff':'#222';}
+
+// === Init ===
+populateRouteSelector();
+</script>
+</body>
+</html>
