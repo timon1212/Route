@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offline iOS9 Route Manager with Snap-to-State</title>
+<style>
+body{margin:0;font-family:Helvetica,Arial,sans-serif;background:#f5f5f7;color:#222;}
+header{background:#4a90e2;color:white;padding:20px;text-align:center;font-size:24px;font-weight:bold;}
+.container{max-width:900px;margin:0 auto;padding:10px;}
+.card{background:white;padding:15px;margin:10px 0;border-radius:12px;box-shadow:0 4px 8px rgba(0,0,0,0.08);}
+button{padding:10px 14px;margin:4px;border:none;border-radius:6px;background:#4a90e2;color:white;cursor:pointer;font-size:14px;}
+button:hover{background:#357ABD;}
+input, select, textarea{width:100%;padding:8px;margin:4px 0;border-radius:6px;border:1px solid #ccc;font-size:14px;}
+.map-container{position:relative;width:100%;height:400px;margin:10px 0;}
+#mapImg{position:absolute;top:0;left:0;width:100%;height:100%;border-radius:12px;}
+#mapCanvas{position:absolute;top:0;left:0;width:100%;height:100%;touch-action:none;}
+.table-container{overflow-x:auto;}
+table{border-collapse:collapse;width:100%;margin-top:10px;}
+th, td{border:1px solid #ccc;padding:8px;text-align:left;font-size:14px;}
+th{background:#eee;}
+.status-complete{color:green;font-weight:bold;}
+.status-pending{color:#e67e22;font-weight:bold;}
+.checklist-complete{color:green;font-weight:bold;}
+.checklist-pending{color:#e67e22;font-weight:bold;}
+</style>
+</head>
+<body>
+<header>🚚 Offline Route Manager iOS9 - Snap to State</header>
+<div class="container">
+
+<div class="card">
+<h3>Routes</h3>
+<select id="routeSelector"></select>
+<input type="text" id="newRouteName" placeholder="New route name">
+<button id="addRouteBtn">Add Route</button>
+<button id="deleteRouteBtn">Delete Route</button>
+<button id="showHistoryBtn">Show Completed Routes</button>
+</div>
+
+<div class="card" id="addStopCard">
+<h3>Add Stop</h3>
+<input type="text" id="stopName" placeholder="Stop Name">
+<textarea id="stopAddress" placeholder="Address / Notes"></textarea>
+<input type="text" id="stopCategory" placeholder="Category">
+<select id="stopPriority"><option>Low</option><option>Medium</option><option>High</option></select>
+<button id="addStopBtn">Add Stop</button>
+</div>
+
+<div class="map-container">
+<img id="mapImg" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAADBUlEQVR4nO3QsQ3AMAgEQeH+6ce2OgbogEB1uIZsABv37+gAIAgCAs3Mp9P1+/f2+vXSzTPJwAAACwEqgEAAAAQBgAAgIACwBIAgACACAMgAIAAgDIDkAAgAIAyACAACACANgAAQCAADIACAAIA2AABAIAMgAIAAIDYAAGIBgACACAMgAIAAgDIDUCIACACANgABAIAMgAIAAgDYAAECIDEACAACANgAAQIgAAyAAIAAgDYAAYgGAAgAIADAACgAAwAICAAwA4AAMACAACgAAIAMAAOAAAgANAQAAAIACwBIAgACACAMgAIAAgDIDkAAgAIAyACAACACANgAAQCAADIACAAIA2AAAiAQAAACALAEgCAAIAMgACAAIAyA5AACAAgDIACAAIA2AAAECIAMRAgAIAyA5AACAAgDIACAAIA2AAAQIgAAyAAIAAgDYAAYgGAAgAIADAACAAIAyACAACADOwgAAAmm07LXodcbkAAAAASUVORK5CYII=" alt="US Map">
+<canvas id="mapCanvas"></canvas>
+</div>
+
+<div class="card">
+<h3>Route Controls</h3>
+<button id="optimizeBtn">Optimize Route</button>
+<button id="startTimerBtn">Start Timer</button>
+<button id="pauseTimerBtn">Pause Timer</button>
+<button id="resetTimerBtn">Reset Timer</button>
+<button id="completeRouteBtn">Mark Route Complete</button>
+<p>Total Estimated Time: <span id="totalTime">0</span> mins</p>
+<p>Route Status: <span id="routeStatus">Not started</span></p>
+</div>
+
+<div class="card table-container">
+<h3>Stops</h3>
+<table id="stopsTable">
+<tr><th>#</th><th>Name</th><th>Address</th><th>Category</th><th>Priority</th><th>Status</th><th>Checklist</th><th>Photo</th><th>Actions</th></tr>
+</table>
+</div>
+
+<div class="card table-container" id="historyCard" style="display:none;">
+<h3>Completed Routes</h3>
+<table id="historyTable">
+<tr><th>Route Name</th><th>Date Completed</th><th>Stops</th><th>Actions</th></tr>
+</table>
+</div>
+
+<div class="card">
+<button id="exportCSVBtn">Export Current Route CSV</button>
+<button id="exportHistoryBtn">Export History CSV</button>
+</div>
+
+<script>
+var routes = JSON.parse(localStorage.getItem('routes')||'{}');
+var currentRoute = null;
+var history = JSON.parse(localStorage.getItem('history')||'[]');
+var routeElapsed = 0;
+var routeTimer = null;
+var canvas=document.getElementById('mapCanvas');
+var ctx=canvas.getContext('2d');
+var dragging = null;
+var offsetX=0, offsetY=0;
+
+// US state centers approximate lat/lng
+var states = [
+ {name:'CA',lat:37.25,lng:-119.5},{name:'TX',lat:31,lng:-99},
+ {name:'NY',lat:43,lng:-75},{name:'FL',lat:28,lng:-82},{name:'IL',lat:40,lng:-89},
+ {name:'PA',lat:41,lng:-77},{name:'OH',lat:40,lng:-82},{name:'GA',lat:33,lng:-83},
+ {name:'NC',lat:35,lng:-79},{name:'MI',lat:44,lng:-85},{name:'NJ',lat:40,lng:-74},
+ {name:'VA',lat:37,lng:-78},{name:'WA',lat:47,lng:-121},{name:'AZ',lat:34,lng:-111},
+ {name:'MA',lat:42,lng:-71},{name:'TN',lat:36,lng:-86},{name:'IN',lat:40,lng:-86},
+ {name:'MO',lat:38,lng:-92},{name:'MD',lat:39,lng:-77},{name:'WI',lat:44,lng:-89}
+ // add more states as desired
+];
+
+function resizeCanvas(){canvas.width=canvas.clientWidth; canvas.height=canvas.clientHeight; drawStops();}
+window.onresize = resizeCanvas;
+
+function saveRoutes(){localStorage.setItem('routes',JSON.stringify(routes)); populateRoutes();}
+function saveHistory(){localStorage.setItem('history',JSON.stringify(history));}
+function populateRoutes(){
+ var sel=document.getElementById('routeSelector'); sel.innerHTML='';
+ for(var r in routes){var opt=document.createElement('option'); opt.value=r; opt.text=r; sel.appendChild(opt);}
+ if(currentRoute && routes[currentRoute]) sel.value=currentRoute;
+ else if(Object.keys(routes).length>0){currentRoute=Object.keys(routes)[0]; sel.value=currentRoute;}
+ else currentRoute=null;
+ renderStops();
+}
+function getStops(){return currentRoute?routes[currentRoute].stops:[];}
+function saveStops(){if(currentRoute){routes[currentRoute].stops=getStops(); saveRoutes(); drawStops();}}
+function checklistComplete(s){return s.delivered && s.signature;}
+
+// Add route/stop buttons
+document.getElementById('addRouteBtn').onclick=function(){
+ var name=document.getElementById('newRouteName').value;
+ if(!name){alert('Enter name');return;}
+ if(routes[name]){alert('Route exists');return;}
+ routes[name]={stops:[]}; currentRoute=name; saveRoutes(); document.getElementById('newRouteName').value='';
+};
+document.getElementById('deleteRouteBtn').onclick=function(){if(!currentRoute)return;if(confirm('Delete route '+currentRoute+'?')){delete routes[currentRoute];currentRoute=Object.keys(routes)[0]||null; saveRoutes();}};
+document.getElementById('routeSelector').onchange=function(){currentRoute=this.value; renderStops();};
+document.getElementById('addStopBtn').onclick=function(){
+ if(!currentRoute){alert('Select route'); return;}
+ var name=document.getElementById('stopName').value;
+ var address=document.getElementById('stopAddress').value;
+ var category=document.getElementById('stopCategory').value;
+ var priority=document.getElementById('stopPriority').value;
+ if(!name){alert('Stop name required'); return;}
+ var lat=Math.random()*25+25;
+ var lng=Math.random()*-60-65;
+ getStops().push({name:name,address:address,category:category,priority:priority,status:'Pending',delivered:false,signature:false,photo:null,lat:lat,lng:lng});
+ saveStops();
+ document.getElementById('stopName').value='';document.getElementById('stopAddress').value='';document.getElementById('stopCategory').value='';
+};
+
+// Route controls
+document.getElementById('optimizeBtn').onclick=function(){nearestNeighborOptimize();};
+document.getElementById('startTimerBtn').onclick=function(){if(routeTimer)return; routeTimer=setInterval(function(){routeElapsed++; document.getElementById('routeStatus').innerText='Running';},60000);};
+document.getElementById('pauseTimerBtn').onclick=function(){if(routeTimer){clearInterval(routeTimer);routeTimer=null;document.getElementById('routeStatus').innerText='Paused';}};
+document.getElementById('resetTimerBtn').onclick=function(){routeElapsed=0;document.getElementById('routeStatus').innerText='Not started'; if(routeTimer){clearInterval(routeTimer);routeTimer=null;}};
+document.getElementById('completeRouteBtn').onclick=function(){if(!currentRoute)return; history.push({routeName:currentRoute,date:new Date().toLocaleString(),stops:JSON.parse(JSON.stringify(getStops()))}); saveHistory(); alert('Route saved to history!'); routeElapsed=0; document.getElementById('routeStatus').innerText='Not started';};
+document.getElementById('showHistoryBtn').onclick=function(){
+ document.getElementById('historyCard').style.display='block';
+ var table=document.getElementById('historyTable'); table.innerHTML='<tr><th>Route Name</th><th>Date Completed</th><th>Stops</th><th>Actions</th></tr>';
+ for(var i=0;i<history.length;i++){var h=history[i];var tr=document.createElement('tr'); tr.innerHTML='<td>'+h.routeName+'</td><td>'+h.date+'</td><td>'+h.stops.length+'</td><td><button onclick="alert(\'Stops: '+h.stops.map(function(s){return s.name;}).join(', ')+'\')">View</button></td>'; table.appendChild(tr);}
+};
+
+// CSV export
+document.getElementById('exportCSVBtn').onclick=function(){var stops=getStops(); if(!stops.length){alert('No stops'); return;} var csv='Index,Name,Address,Category,Priority,Status,Delivered,Signature,Photo\n'; for(var i=0;i<stops.length;i++){var s=stops[i]; csv+=(i+1)+',"'+s.name+'","'+s.address+'","'+s.category+'","'+s.priority+'","'+s.status+'","'+s.delivered+'","'+s.signature+'","'+(s.photo?1:0)+'"\n';} var blob=new Blob([csv],{type:'text/csv'}); var link=document.createElement('a'); link.href=window.URL.createObjectURL(blob); link.download=currentRoute+'_route.csv'; link.click();};
+document.getElementById('exportHistoryBtn').onclick=function(){if(!history.length){alert('No history'); return;} var csv='Route,Date,StopCount\n'; for(var i=0;i<history.length;i++){csv+='"'+history[i].routeName+'","'+history[i].date+'","'+history[i].stops.length+'"\n';} var blob=new Blob([csv],{type:'text/csv'}); var link=document.createElement('a'); link.href=window.URL.createObjectURL(blob); link.download='route_history.csv'; link.click();};
+
+// render stops
+function renderStops(){
+ var table=document.getElementById('stopsTable'); table.innerHTML='<tr><th>#</th><th>Name</th><th>Address</th><th>Category</th><th>Priority</th><th>Status</th><th>Checklist</th><th>Photo</th><th>Actions</th></tr>';
+ var stops=getStops();
+ for(var i=0;i<stops.length;i++){
+  var s=stops[i]; 
+  var tr=document.createElement('tr');
+  tr.innerHTML='<td>'+(i+1)+'</td><td>'+s.name+'</td><td>'+s.address+'</td><td>'+s.category+'</td><td>'+s.priority+'</td><td class="'+(s.status==='Complete'?'status-complete':'status-pending')+'">'+s.status+'</td>'+
+  '<td>'+(checklistComplete(s)?'Complete':'Pending')+'</td>'+
+  '<td>'+(s.photo?'<span>✓</span>':'<input type="file" onchange="uploadPhoto(event,'+i+')">')+'</td>'+
+  '<td><button onclick="deleteStop('+i+')">Delete</button></td>';
+  table.appendChild(tr);
+ }
+ document.getElementById('totalTime').innerText=(stops.length*5 + (stops.length-1)*30);
+ drawStops();
+}
+function deleteStop(i){if(confirm('Delete this stop?')){getStops().splice(i,1); saveStops(); renderStops();}}
+function uploadPhoto(e,i){var file=e.target.files[0]; var reader=new FileReader(); reader.onload=function(evt){getStops()[i].photo=evt.target.result; renderStops();}; reader.readAsDataURL(file);}
+
+// draw stops
+function drawStops(){
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ var stops=getStops();
+ if(stops.length>0){
+   ctx.beginPath();
+   for(var i=0;i<stops.length;i++){
+     var s=stops[i];
+     var x=((s.lng+125)/60)*canvas.width;
+     var y=((50-s.lat)/25)*canvas.height;
+     if(i==0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+   }
+   ctx.strokeStyle='blue'; ctx.lineWidth=2; ctx.stroke();
+ }
+ for(var i=0;i<stops.length;i++){
+   var s=stops[i];
+   var x=((s.lng+125)/60)*canvas.width;
+   var y=((50-s.lat)/25)*canvas.height;
+   ctx.beginPath();
+   ctx.arc(x,y,12,0,2*Math.PI);
+   ctx.fillStyle='red'; ctx.fill();
+   ctx.fillStyle='white'; ctx.font='10px Arial';
+   ctx.textAlign='center';
+   ctx.textBaseline='middle';
+   ctx.fillText(i+1,x,y);
+   s.screenX=x; s.screenY=y;
+ }
+}
+
+// drag touch
+canvas.addEventListener('touchstart',function(e){
+ var touch = e.touches[0];
+ var rect=canvas.getBoundingClientRect();
+ var x=touch.clientX-rect.left;
+ var y=touch.clientY-rect.top;
+ var stops=getStops();
+ for(var i=0;i<stops.length;i++){
+   var s=stops[i];
+   var dx=x-s.screenX, dy=y-s.screenY;
+   if(Math.sqrt(dx*dx+dy*dy)<15){dragging=i; offsetX=dx; offsetY=dy; break;}
+ }
+});
+canvas.addEventListener('touchmove',function(e){
+ if(dragging!==null){
+   e.preventDefault();
+   var touch=e.touches[0];
+   var rect=canvas.getBoundingClientRect();
+   var x=touch.clientX-rect.left-offsetX;
+   var y=touch.clientY-rect.top-offsetY;
+   var s=getStops()[dragging];
+   s.lng = x/canvas.width*60-125;
+   s.lat = 50 - y/canvas.height*25;
+   drawStops();
+ }
+});
+canvas.addEventListener('touchend',function(e){
+ if(dragging!==null){
+   // Snap to nearest state
+   var s=getStops()[dragging];
+   var nearest=null, distMin=99999;
+   for(var i=0;i<states.length;i++){
+     var dx=s.lat-states[i].lat;
+     var dy=s.lng-states[i].lng;
+     var d=Math.sqrt(dx*dx+dy*dy);
+     if(d<distMin){distMin=d; nearest=states[i];}
+   }
+   if(nearest){s.lat=nearest.lat; s.lng=nearest.lng;}
+   dragging=null;
+   saveStops(); drawStops();
+ }
+});
+
+// nearest neighbor
+function nearestNeighborOptimize(){
+ var stops=getStops();
+ if(stops.length<=2){alert('Too few stops to optimize'); return;}
+ var unvisited=stops.slice(), ordered=[];
+ var current=unvisited.shift(); ordered.push(current);
+ while(unvisited.length>0){
+   var nearestIdx=0, nearestDist=999999;
+   for(var i=0;i<unvisited.length;i++){
+     var dx=ordered[ordered.length-1].lng-unvisited[i].lng;
+     var dy=ordered[ordered.length-1].lat-unvisited[i].lat;
+     var dist=Math.sqrt(dx*dx+dy*dy);
+     if(dist<nearestDist){nearestDist=dist; nearestIdx=i;}
+   }
+   ordered.push(unvisited.splice(nearestIdx,1)[0]);
+ }
+ routes[currentRoute].stops=ordered;
+ saveRoutes();
+ renderStops();
+}
+
+window.onload=function(){populateRoutes(); resizeCanvas();}
+</script>
+</body>
+</html>
