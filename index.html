@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offline Multi-Route Manager - Single Map</title>
+<style>
+body {margin:0; font-family:Helvetica, Arial, sans-serif; background:#f5f5f7; color:#222;}
+header {background:#4a90e2; color:white; padding:20px; text-align:center; font-size:24px; font-weight:bold;}
+.container {max-width:900px; margin:0 auto; padding:10px;}
+.card {background:white; padding:15px; margin:10px 0; border-radius:12px; box-shadow:0 4px 8px rgba(0,0,0,0.08);}
+button {padding:10px 14px; margin:4px; border:none; border-radius:6px; background:#4a90e2; color:white; cursor:pointer; font-size:14px;}
+button:hover {background:#357ABD;}
+input, select, textarea {width:100%; padding:8px; margin:4px 0; border-radius:6px; border:1px solid #ccc; font-size:14px;}
+.map-container {position:relative; width:100%; height:400px; margin:10px 0;}
+#mapImg {position:absolute; top:0; left:0; width:100%; height:100%; border-radius:12px;}
+#mapCanvas {position:absolute; top:0; left:0; width:100%; height:100%; touch-action:none;}
+.table-container {overflow-x:auto;}
+table {border-collapse:collapse; width:100%; margin-top:10px;}
+th, td {border:1px solid #ccc; padding:8px; text-align:left; font-size:14px;}
+th {background:#eee;}
+</style>
+</head>
+<body>
+
+<header>🚚 Offline Multi-Route Manager - Single Map</header>
+<div class="container">
+
+<div class="card">
+<h3>Select Route</h3>
+<select id="routeSelect">
+  <option value="covA">Covington A</option>
+  <option value="covB">Covington B</option>
+  <option value="covC">Covington C</option>
+  <option value="mandA">Mandeville A</option>
+  <option value="mandB">Mandeville B</option>
+  <option value="mandC">Mandeville C</option>
+  <option value="slidellA">Slidell A</option>
+  <option value="slidellB">Slidell B</option>
+  <option value="hammondA">Hammond A</option>
+  <option value="hammondB">Hammond B</option>
+  <option value="batonA">Baton Rouge A</option>
+  <option value="batonB">Baton Rouge B</option>
+  <option value="biloxiA">Biloxi A</option>
+  <option value="biloxiB">Biloxi B</option>
+</select>
+</div>
+
+<div class="card">
+<h3>Add Stop</h3>
+<input type="text" id="stopName" placeholder="Stop Name">
+<textarea id="stopNotes" placeholder="Notes / Address"></textarea>
+<button id="addStopBtn">Add Stop</button>
+</div>
+
+<div class="map-container">
+<img id="mapImg" src="IMG_6774.jpeg" alt="Map">
+<canvas id="mapCanvas"></canvas>
+</div>
+
+<div class="card">
+<h3>Route Controls</h3>
+<button id="startTimerBtn">Start Timer</button>
+<button id="pauseTimerBtn">Pause Timer</button>
+<button id="resetTimerBtn">Reset Timer</button>
+<button id="completeRouteBtn">Mark Route Complete</button>
+<p>Total Estimated Time: <span id="totalTime">0</span> mins</p>
+<p>Route Status: <span id="routeStatus">Not started</span></p>
+</div>
+
+<div class="card table-container">
+<h3>Stop List</h3>
+<table id="stopsTable">
+<tr><th>#</th><th>Name</th><th>Notes</th><th>Status</th><th>Completed</th><th>Actions</th></tr>
+</table>
+</div>
+
+<script>
+// ======= Data =======
+var routes = {
+  covA:{stops:[], timerMinutes:0, timerRunning:false},
+  covB:{stops:[], timerMinutes:0, timerRunning:false},
+  covC:{stops:[], timerMinutes:0, timerRunning:false},
+  mandA:{stops:[], timerMinutes:0, timerRunning:false},
+  mandB:{stops:[], timerMinutes:0, timerRunning:false},
+  mandC:{stops:[], timerMinutes:0, timerRunning:false},
+  slidellA:{stops:[], timerMinutes:0, timerRunning:false},
+  slidellB:{stops:[], timerMinutes:0, timerRunning:false},
+  hammondA:{stops:[], timerMinutes:0, timerRunning:false},
+  hammondB:{stops:[], timerMinutes:0, timerRunning:false},
+  batonA:{stops:[], timerMinutes:0, timerRunning:false},
+  batonB:{stops:[], timerMinutes:0, timerRunning:false},
+  biloxiA:{stops:[], timerMinutes:0, timerRunning:false},
+  biloxiB:{stops:[], timerMinutes:0, timerRunning:false}
+};
+
+// Map images per route
+var routeMaps = {
+  covA: "IMG_6774.jpeg",
+  covB: "IMG_6774.jpeg",
+  covC: "IMG_6774.jpeg",
+  mandA: "IMG_6774.jpeg",
+  mandB: "IMG_6774.jpeg",
+  mandC: "IMG_6774.jpeg",
+  slidellA: "IMG_6776.jpeg",
+  slidellB: "IMG_6776.jpeg",
+  hammondA: "IMG_6774.jpeg",
+  hammondB: "IMG_6774.jpeg",
+  batonA: "IMG_6774.jpeg",
+  batonB: "IMG_6774.jpeg",
+  biloxiA: "IMG_6774.jpeg",
+  biloxiB: "IMG_6774.jpeg"
+};
+
+var currentRoute = 'covA';
+var canvas = document.getElementById('mapCanvas');
+var ctx = canvas.getContext('2d');
+var dragging = null;
+var timer = null;
+var stops = [];
+var timerMinutes = 0;
+var timerRunning = false;
+
+// ======= Resize =======
+function resizeCanvas(){
+    canvas.width = mapImg.clientWidth;
+    canvas.height = mapImg.clientHeight;
+    drawStops();
+}
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('load', function(){ resizeCanvas(); loadCurrentRoute(); });
+
+// ======= Load / Save =======
+function saveCurrentRoute(){
+    routes[currentRoute].stops = stops;
+    routes[currentRoute].timerMinutes = timerMinutes;
+    routes[currentRoute].timerRunning = timerRunning;
+    localStorage.setItem('route_'+currentRoute, JSON.stringify(routes[currentRoute]));
+}
+function loadCurrentRoute(){
+    var saved = localStorage.getItem('route_'+currentRoute);
+    if(saved) routes[currentRoute] = JSON.parse(saved);
+    stops = routes[currentRoute].stops || [];
+    timerMinutes = routes[currentRoute].timerMinutes || 0;
+    timerRunning = routes[currentRoute].timerRunning || false;
+    updateEstimatedTime();
+    document.getElementById('routeStatus').innerText = timerRunning ? 'In progress':'Not started';
+    
+    // Set map image for current route
+    document.getElementById('mapImg').src = routeMaps[currentRoute] || "IMG_6774.jpeg";
+    
+    drawStops();
+    renderStopsTable();
+}
+document.getElementById('routeSelect').onchange=function(){
+    saveCurrentRoute();
+    currentRoute=this.value;
+    loadCurrentRoute();
+}
+
+// ======= Add Stop Button =======
+document.getElementById('addStopBtn').onclick=function(){
+    var name=document.getElementById('stopName').value.trim();
+    var notes=document.getElementById('stopNotes').value.trim();
+    if(!name)return alert("Enter stop name");
+    stops.push({name:name, notes:notes, status:'pending', x:canvas.width/2, y:canvas.height/2});
+    document.getElementById('stopName').value='';
+    document.getElementById('stopNotes').value='';
+    drawStops();
+    renderStopsTable();
+    updateEstimatedTime();
+    saveCurrentRoute();
+}
+
+// ======= Draw Stops =======
+function drawStops(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle='black';
+    ctx.lineWidth=2;
+    stops.forEach(function(s,i){
+        ctx.beginPath();
+        ctx.arc(s.x,s.y,10,0,2*Math.PI);
+        ctx.fillStyle = (s.status==='completed')?'green':'red';
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle='white';
+        ctx.font='12px Arial';
+        ctx.textAlign='center';
+        ctx.fillText(i+1,s.x,s.y+4);
+    });
+}
+
+// ======= Dragging / click to add stops =======
+canvas.addEventListener('touchstart',function(e){
+    if(e.touches.length==1){
+        var t=e.touches[0], rect=canvas.getBoundingClientRect();
+        var tx=t.clientX-rect.left, ty=t.clientY-rect.top;
+        dragging=null;
+        stops.forEach(function(s,i){ if(Math.hypot(s.x-tx,s.y-ty)<15) dragging=i; });
+        if(dragging===null){
+            var name = prompt("Enter stop name:");
+            if(!name) return;
+            var notes = prompt("Enter notes/address (optional):") || "";
+            stops.push({name:name, notes:notes, status:'pending', x:tx, y:ty});
+            drawStops();
+            renderStopsTable();
+            updateEstimatedTime();
+            saveCurrentRoute();
+        }
+    }
+});
+canvas.addEventListener('touchmove',function(e){
+    if(dragging===null)return;
+    var t=e.touches[0], rect=canvas.getBoundingClientRect();
+    stops[dragging].x=t.clientX-rect.left;
+    stops[dragging].y=t.clientY-rect.top;
+    drawStops();
+});
+canvas.addEventListener('touchend',function(){ dragging=null; drawStops(); renderStopsTable(); updateEstimatedTime(); saveCurrentRoute(); });
+canvas.addEventListener('click',function(e){
+    var rect=canvas.getBoundingClientRect();
+    var x=e.clientX-rect.left;
+    var y=e.clientY-rect.top;
+    var hit=false;
+    stops.forEach(function(s){ if(Math.hypot(s.x-x,s.y-y)<15) hit=true; });
+    if(hit) return;
+    var name = prompt("Enter stop name:");
+    if(!name) return;
+    var notes = prompt("Enter notes/address (optional):") || "";
+    stops.push({name:name, notes:notes, status:'pending', x:x, y:y});
+    drawStops();
+    renderStopsTable();
+    updateEstimatedTime();
+    saveCurrentRoute();
+});
+
+// ======= Table =======
+function renderStopsTable(){
+    var tbody=document.getElementById('stopsTable');
+    tbody.innerHTML='<tr><th>#</th><th>Name</th><th>Notes</th><th>Status</th><th>Completed</th><th>Actions</th></tr>';
+    stops.forEach(function(s,i){
+        var tr=document.createElement('tr');
+        tr.innerHTML=
+        '<td>'+(i+1)+'</td>'+
+        '<td>'+s.name+'</td>'+
+        '<td>'+s.notes+'</td>'+
+        '<td>'+s.status+'</td>'+
+        '<td><input type="checkbox" '+(s.status==='completed'?'checked':'')+' onchange="toggleCompleted('+i+', this.checked)"></td>'+
+        '<td><button onclick="removeStop('+i+')">Delete</button></td>';
+        tbody.appendChild(tr);
+    });
+}
+
+// ======= Toggle completed =======
+function toggleCompleted(index, checked){
+    stops[index].status = checked ? 'completed' : 'pending';
+    drawStops();
+    renderStopsTable();
+    updateEstimatedTime();
+    saveCurrentRoute();
+}
+
+// ======= Remove Stop =======
+function removeStop(i){ 
+    stops.splice(i,1); 
+    drawStops(); 
+    renderStopsTable(); 
+    updateEstimatedTime();
+    saveCurrentRoute(); 
+}
+
+// ======= Timer =======
+function updateTimer(){ document.getElementById('totalTime').innerText=timerMinutes; }
+document.getElementById('startTimerBtn').onclick=function(){
+    if(timerRunning)return;
+    timerRunning=true;
+    document.getElementById('routeStatus').innerText='In progress';
+    timer=setInterval(function(){timerMinutes++; updateTimer(); saveCurrentRoute();},60000);
+    updateTimer(); saveCurrentRoute();
+};
+document.getElementById('pauseTimerBtn').onclick=function(){ if(!timerRunning)return; clearInterval(timer); timerRunning=false; saveCurrentRoute(); };
+document.getElementById('resetTimerBtn').onclick=function(){ clearInterval(timer); timerRunning=false; timerMinutes=0; updateTimer(); document.getElementById('routeStatus').innerText='Not started'; saveCurrentRoute(); };
+document.getElementById('completeRouteBtn').onclick=function(){ clearInterval(timer); timerRunning=false; document.getElementById('routeStatus').innerText='Completed'; saveCurrentRoute(); };
+
+// ======= Estimated Time Calculation =======
+function updateEstimatedTime(){
+    var n = stops.length;
+    var total = n>0 ? n*5 + (n-1)*30 : 0;
+    document.getElementById('totalTime').innerText = total;
+}
+</script>
+</body>
+</html>
