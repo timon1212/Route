@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Offline iOS9 Route Manager with Map</title>
+<style>
+body{margin:0;font-family:Helvetica,Arial,sans-serif;background:#f5f5f7;color:#222;}
+header{background:#4a90e2;color:white;padding:20px;text-align:center;font-size:24px;font-weight:bold;}
+.container{max-width:900px;margin:0 auto;padding:10px;}
+.card{background:white;padding:15px;margin:10px 0;border-radius:12px;box-shadow:0 4px 8px rgba(0,0,0,0.08);}
+button{padding:10px 14px;margin:4px;border:none;border-radius:6px;background:#4a90e2;color:white;cursor:pointer;font-size:14px;}
+button:hover{background:#357ABD;}
+input, select, textarea{width:100%;padding:8px;margin:4px 0;border-radius:6px;border:1px solid #ccc;font-size:14px;}
+.map-container{position:relative;width:100%;height:400px;margin:10px 0;}
+#mapImg{width:100%;height:100%;border-radius:12px;display:block;}
+#mapCanvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}
+.table-container{overflow-x:auto;}
+table{border-collapse:collapse;width:100%;margin-top:10px;}
+th, td{border:1px solid #ccc;padding:8px;text-align:left;font-size:14px;}
+th{background:#eee;}
+.status-complete{color:green;font-weight:bold;}
+.status-pending{color:#e67e22;font-weight:bold;}
+.checklist-complete{color:green;font-weight:bold;}
+.checklist-pending{color:#e67e22;font-weight:bold;}
+</style>
+</head>
+<body>
+<header>🚚 Offline Route Manager iOS9</header>
+<div class="container">
+
+<div class="card">
+<h3>Routes</h3>
+<select id="routeSelector"></select>
+<input type="text" id="newRouteName" placeholder="New route name">
+<button id="addRouteBtn">Add Route</button>
+<button id="deleteRouteBtn">Delete Route</button>
+<button id="showHistoryBtn">Show Completed Routes</button>
+</div>
+
+<div class="card" id="addStopCard">
+<h3>Add Stop</h3>
+<input type="text" id="stopName" placeholder="Stop Name">
+<textarea id="stopAddress" placeholder="Address / Notes"></textarea>
+<input type="text" id="stopCategory" placeholder="Category">
+<select id="stopPriority"><option>Low</option><option>Medium</option><option>High</option></select>
+<button id="addStopBtn">Add Stop</button>
+</div>
+
+<div class="map-container">
+<img id="mapImg" src="us-map.png" alt="US Map">
+<canvas id="mapCanvas"></canvas>
+</div>
+
+<div class="card">
+<h3>Route Controls</h3>
+<button id="optimizeBtn">Optimize Route</button>
+<button id="startTimerBtn">Start Timer</button>
+<button id="pauseTimerBtn">Pause Timer</button>
+<button id="resetTimerBtn">Reset Timer</button>
+<button id="completeRouteBtn">Mark Route Complete</button>
+<p>Total Estimated Time: <span id="totalTime">0</span> mins</p>
+<p>Route Status: <span id="routeStatus">Not started</span></p>
+</div>
+
+<div class="card table-container">
+<h3>Stops</h3>
+<table id="stopsTable">
+<tr><th>Name</th><th>Address</th><th>Category</th><th>Priority</th><th>Status</th><th>Checklist</th><th>Photo</th><th>Actions</th></tr>
+</table>
+</div>
+
+<div class="card table-container" id="historyCard" style="display:none;">
+<h3>Completed Routes</h3>
+<table id="historyTable">
+<tr><th>Route Name</th><th>Date Completed</th><th>Stops</th><th>Actions</th></tr>
+</table>
+</div>
+
+<div class="card">
+<button id="exportCSVBtn">Export Current Route CSV</button>
+<button id="exportHistoryBtn">Export History CSV</button>
+</div>
+
+</div>
+
+<script>
+var routes = JSON.parse(localStorage.getItem('routes') || '{}');
+var currentRoute = null;
+var history = JSON.parse(localStorage.getItem('history') || '[]');
+var routeElapsed = 0;
+var routeTimer = null;
+
+// Map canvas
+var canvas = document.getElementById('mapCanvas');
+var ctx = canvas.getContext('2d');
+function resizeCanvas(){canvas.width=canvas.clientWidth; canvas.height=canvas.clientHeight; drawStops();}
+window.onresize = resizeCanvas;
+
+// --- Helpers ---
+function saveRoutes(){localStorage.setItem('routes',JSON.stringify(routes)); populateRoutes();}
+function saveHistory(){localStorage.setItem('history',JSON.stringify(history));}
+function populateRoutes(){
+ var sel=document.getElementById('routeSelector'); sel.innerHTML='';
+ for(var r in routes){var opt=document.createElement('option'); opt.value=r; opt.text=r; sel.appendChild(opt);}
+ if(currentRoute && routes[currentRoute]) sel.value=currentRoute;
+ else if(Object.keys(routes).length>0){currentRoute=Object.keys(routes)[0]; sel.value=currentRoute;}
+ else currentRoute=null;
+ renderStops();
+}
+function getStops(){return currentRoute?routes[currentRoute].stops:[];}
+function saveStops(){if(currentRoute){routes[currentRoute].stops=getStops(); saveRoutes(); drawStops();}}
+function checklistComplete(s){return s.delivered && s.signature;}
+
+// --- Event Handlers ---
+document.getElementById('addRouteBtn').onclick = function(){
+ var name=document.getElementById('newRouteName').value; if(!name){alert('Enter name');return;}
+ if(routes[name]){alert('Route exists');return;}
+ routes[name]={stops:[]}; currentRoute=name; saveRoutes(); document.getElementById('newRouteName').value='';
+};
+document.getElementById('deleteRouteBtn').onclick = function(){
+ if(!currentRoute) return;
+ if(confirm('Delete route '+currentRoute+'?')){delete routes[currentRoute];currentRoute=Object.keys(routes)[0]||null; saveRoutes();}
+};
+document.getElementById('routeSelector').onchange = function(){currentRoute=this.value; renderStops();};
+
+document.getElementById('addStopBtn').onclick = function(){
+ if(!currentRoute){alert('Select route'); return;}
+ var name=document.getElementById('stopName').value;
+ var address=document.getElementById('stopAddress').value;
+ var category=document.getElementById('stopCategory').value;
+ var priority=document.getElementById('stopPriority').value;
+ if(!name){alert('Stop name required'); return;}
+ // Assign random lat/lng within US approx
+ var lat = Math.random()*25 + 25; // 25-50
+ var lng = Math.random()*-60 - 65; // -65 to -125
+ getStops().push({name:name,address:address,category:category,priority:priority,status:'Pending',delivered:false,signature:false,photo:null,lat:lat,lng:lng});
+ saveStops();
+ document.getElementById('stopName').value='';document.getElementById('stopAddress').value='';document.getElementById('stopCategory').value='';
+};
+
+document.getElementById('optimizeBtn').onclick = function(){
+ alert('Route optimization simplified: stops remain in added order.');
+};
+document.getElementById('startTimerBtn').onclick = function(){
+ if(routeTimer) return;
+ routeTimer=setInterval(function(){routeElapsed++; document.getElementById('routeStatus').innerText='Running';},60000);
+};
+document.getElementById('pauseTimerBtn').onclick = function(){if(routeTimer){clearInterval(routeTimer);routeTimer=null;document.getElementById('routeStatus').innerText='Paused';}};
+document.getElementById('resetTimerBtn').onclick = function(){routeElapsed=0;document.getElementById('routeStatus').innerText='Not started'; if(routeTimer){clearInterval(routeTimer);routeTimer=null;}};
+document.getElementById('completeRouteBtn').onclick = function(){
+ if(!currentRoute) return;
+ history.push({routeName:currentRoute,date:new Date().toLocaleString(),stops:JSON.parse(JSON.stringify(getStops()))});
+ saveHistory(); alert('Route saved to history!'); routeElapsed=0; document.getElementById('routeStatus').innerText='Not started';
+};
+document.getElementById('showHistoryBtn').onclick = function(){
+ document.getElementById('historyCard').style.display='block';
+ var table=document.getElementById('historyTable'); table.innerHTML='<tr><th>Route Name</th><th>Date Completed</th><th>Stops</th><th>Actions</th></tr>';
+ for(var i=0;i<history.length;i++){var h=history[i];var tr=document.createElement('tr'); tr.innerHTML='<td>'+h.routeName+'</td><td>'+h.date+'</td><td>'+h.stops.length+'</td><td><button onclick="alert(\'Stops: '+h.stops.map(function(s){return s.name;}).join(', ')+'\')">View</button></td>'; table.appendChild(tr);}
+};
+document.getElementById('exportCSVBtn').onclick = function(){
+ var stops=getStops(); if(!stops.length){alert('No stops'); return;}
+ var csv='Name,Address,Category,Priority,Status,Delivered,Signature,Photo\n';
+ for(var i=0;i<stops.length;i++){var s=stops[i]; csv+='"'+s.name+'","'+s.address+'","'+s.category+'","'+s.priority+'","'+s.status+'","'+s.delivered+'","'+s.signature+'","'+(s.photo?1:0)+'"\n';}
+ var blob=new Blob([csv],{type:'text/csv'}); var link=document.createElement('a'); link.href=window.URL.createObjectURL(blob); link.download=currentRoute+'_route.csv'; link.click();
+};
+document.getElementById('exportHistoryBtn').onclick = function(){
+ if(!history.length){alert('No history'); return;}
+ var csv='Route,Date,StopCount\n';
+ for(var i=0;i<history.length;i++){csv+='"'+history[i].routeName+'","'+history[i].date+'","'+history[i].stops.length+'"\n';}
+ var blob=new Blob([csv],{type:'text/csv'}); var link=document.createElement('a'); link.href=window.URL.createObjectURL(blob); link.download='route_history.csv'; link.click();
+};
+
+// --- Render Stops ---
+function renderStops(){
+ var table=document.getElementById('stopsTable'); table.innerHTML='<tr><th>Name</th><th>Address</th><th>Category</th><th>Priority</th><th>Status</th><th>Checklist</th><th>Photo</th><th>Actions</th></tr>';
+ var stops=getStops();
+ for(var i=0;i<stops.length;i++){
+  var s=stops[i]; var tr=document.createElement('tr');
+  tr.innerHTML='<td>'+s.name+'</td><td>'+s.address+'</td><td>'+s.category+'</td><td>'+s.priority+'</td><td class="'+(s.status==='Complete'?'status-complete':'status-pending')+'">'+s.status+'</td>'+
+  '<td>'+(checklistComplete(s)?'Complete':'Pending')+'</td>'+
+  '<td>'+(s.photo?'<span>✓</span>':'<input type="file" onchange="uploadPhoto(event,'+i+')">')+'</td>'+
+  '<td><button onclick="deleteStop('+i+')">Delete</button></td>';
+  table.appendChild(tr);
+ }
+ document.getElementById('totalTime').innerText=(stops.length*5 + (stops.length-1)*30);
+ drawStops();
+}
+function deleteStop(i){if(confirm('Delete this stop?')){getStops().splice(i,1); saveStops(); renderStops();}}
+function uploadPhoto(e,i){var file=e.target.files[0]; var reader=new FileReader(); reader.onload=function(evt){getStops()[i].photo=evt.target.result; renderStops();}; reader.readAsDataURL(file);}
+
+// --- Draw stops on map ---
+function drawStops(){
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ var stops=getStops();
+ for(var i=0;i<stops.length;i++){
+  var s=stops[i];
+  // map lat/lng to canvas x/y (approx)
+  var x = ((s.lng+125)/60)*canvas.width;
+  var y = ((50-s.lat)/25)*canvas.height;
+  ctx.beginPath(); ctx.arc(x,y,6,0,2*Math.PI);
+  ctx.fillStyle = (s.status==='Complete')?'green':'red';
+  ctx.fill();
+  ctx.fillStyle='black';
+  ctx.fillText(s.name,x+8,y+4);
+ }
+}
+
+window.onload = function(){populateRoutes(); resizeCanvas();}
+</script>
+</body>
+</html>
